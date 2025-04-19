@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Nested Stack for Immich Networking Resources (ALB, SGs, Listener, Target Group).
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where resources should be deployed.
+  SubnetIds: # Public subnets for ALB
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnets for the Application Load Balancer.
+  DomainName:
+    Type: String
+    Description: Optional. Custom domain name for accessing Immich.
+  CertificateArn:
+    Type: String
+    Description: Optional. ARN of the ACM certificate for HTTPS.
+  StackNamePrefix:
+    Type: String
+    Description: Prefix for resource names to ensure uniqueness.
+  ImmichServerPort:
+      Type: Number
+      Description: Port the Immich Server container listens on.
+
+Conditions:
+  HasDomain: !Not [!Equals [!Ref DomainName, ""]]
+
+Resources:
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for the Application Load Balancer
+      VpcId: !Ref VpcId
+      GroupName: !Sub '${StackNamePrefix}-ALB-SG'
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+
+  ALBIngressFromHTTPS:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasDomain
+    Properties:
+       GroupId: !Ref ALBSecurityGroup
+       CidrIp: 0.0.0.0/0
+       IpProtocol: tcp
+       FromPort: 443
+       ToPort: 443
+
+  ECSServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for the ECS Services (Allow ALB & internal traffic)
+      VpcId: !Ref VpcId
+      GroupName: !Sub '${StackNamePrefix}-ECS-SG'
+      # Ingress rules added below after SG creation to allow self-referencing
+
+  ECSServiceIngressFromALB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+       GroupId: !Ref ECSServiceSecurityGroup
+       IpProtocol: tcp
+       FromPort: !Ref ImmichServerPort # Allow traffic from ALB to Immich Server
+       ToPort: !Ref ImmichServerPort
+       SourceSecurityGroupId: !Ref ALBSecurityGroup
+
+  ECSServiceIngressFromSelf:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+       GroupId: !Ref ECSServiceSecurityGroup
+       IpProtocol: -1 # Allow all internal traffic between services in this group
+       SourceSecurityGroupId: !Ref ECSServiceSecurityGroup
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${StackNamePrefix}-ALB'
+      Subnets: !Ref SubnetIds
+      SecurityGroups: [!Ref ALBSecurityGroup]
+      Scheme: internet-facing
+      Type: application
+
+  ImmichServerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${StackNamePrefix}-ImmichServer-TG'
+      VpcId: !Ref VpcId
+      Port: !Ref ImmichServerPort
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckPath: /api/server-info/ping
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: traffic-port # Use the target group's port
+      Matcher: { HttpCode: '200' }
+
+  ALBListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions: !If
+        - HasDomain
+        # If Domain, redirect HTTP to HTTPS
+        - - Type: redirect
+            RedirectConfig:
+              Protocol: HTTPS
+              Port: '443'
+              StatusCode: HTTP_301
+        # If no Domain, forward HTTP directly to target group
+        - - Type: forward
+            TargetGroupArn: !Ref ImmichServerTargetGroup
+
+  ALBListenerHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasDomain
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates: [{ CertificateArn: !Ref CertificateArn }]
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ImmichServerTargetGroup
+
+Outputs:
+  LoadBalancerDNSName:
+    Description: DNS Name of the Application Load Balancer
+    Value: !GetAtt LoadBalancer.DNSName
+  LoadBalancerCanonicalHostedZoneID:
+    Description: Canonical Hosted Zone ID of the Application Load Balancer
+    Value: !GetAtt LoadBalancer.CanonicalHostedZoneID
+  ImmichServerTargetGroupArn:
+    Description: ARN of the Target Group for the Immich Server
+    Value: !Ref ImmichServerTargetGroup
+  ALBSecurityGroupId:
+    Description: Security Group ID for the ALB
+    Value: !Ref ALBSecurityGroup
+  ECSServiceSecurityGroupId:
+    Description: Security Group ID for the ECS Services
+    Value: !Ref ECSServiceSecurityGroup
+  ALBListenerHTTPSArn: # Export HTTPS listener ARN if needed elsewhere (e.g., for WAF)
+      Description: ARN of the HTTPS Listener (if created)
+      Value: !If [HasDomain, !Ref ALBListenerHTTPS, "NA"]
+      Condition: HasDomain

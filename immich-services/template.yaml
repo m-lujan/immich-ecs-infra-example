@@ -1,0 +1,205 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Root SAM template to deploy Immich application using nested stacks.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select the VPC where resources should be deployed.
+  SubnetIds: # Public Subnets for ALB
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Select at least two public subnets for the ALB.
+  PrivateSubnetIds: # Private Subnets for ECS Tasks & EFS
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Select at least two private subnets for the ECS Tasks and EFS Mount Targets.
+  ImmichVersion:
+    Type: String
+    Description: The Immich version tag to deploy (e.g., 'release', 'v1.131.3'). From .env
+    Default: v1.131.3
+  DBPassword:
+    Type: String
+    Description: Password for the PostgreSQL database. Use A-Za-z0-9 only. Sourced from .env
+    NoEcho: true
+  DBUsername:
+    Type: String
+    Description: Username for the PostgreSQL database. Sourced from .env
+    Default: postgres
+  DBDatabaseName:
+    Type: String
+    Description: Name for the Immich PostgreSQL database. Sourced from .env
+    Default: immich
+  # --- Optional Parameters ---
+  DomainName:
+    Type: String
+    Description: Optional. Custom domain name for accessing Immich (e.g., immich.example.com).
+    Default: ""
+  CertificateArn:
+    Type: String
+    Description: Optional. ARN of the ACM certificate for HTTPS if DomainName is provided.
+    Default: ""
+  # --- Resource Sizing Parameters ---
+  ImmichServerCPU: { Type: Number, Default: 1024 }
+  ImmichServerMemory: { Type: Number, Default: 2048 }
+  ImmichMLCPU: { Type: Number, Default: 1024 }
+  ImmichMLMemory: { Type: Number, Default: 2048 }
+  RedisCPU: { Type: Number, Default: 256 }
+  RedisMemory: { Type: Number, Default: 512 }
+  DatabaseCPU: { Type: Number, Default: 1024 }
+  DatabaseMemory: { Type: Number, Default: 2048 }
+
+Conditions:
+  HasDomain: !Not [!Equals [!Ref DomainName, ""]]
+
+Resources:
+  # --- Nested Stack: Networking ---
+  NetworkingStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./networking.yaml # Path relative to this template
+      Parameters:
+        VpcId: !Ref VpcId
+        SubnetIds: !Join # Public subnets for ALB
+          - ','
+          - !Ref SubnetIds
+        DomainName: !Ref DomainName
+        CertificateArn: !Ref CertificateArn
+        StackNamePrefix: !Sub '${AWS::StackName}-net'
+        ImmichServerPort: 2283 # Port immich-server listens on
+
+  # --- Nested Stack: Storage (EFS) ---
+  StorageStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./storage.yaml
+      Parameters:
+        VpcId: !Ref VpcId
+        PrivateSubnetIds: !Join
+          - ','
+          - !Ref PrivateSubnetIds
+        StackNamePrefix: !Sub '${AWS::StackName}-storage'
+        # Pass SG from networking stack to allow access from tasks
+        ECSServiceSecurityGroupId: !GetAtt NetworkingStack.Outputs.ECSServiceSecurityGroupId
+
+  # --- Nested Stack: ECS Base (Cluster, Roles, LogGroup) ---
+  EcsBaseStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: StorageStack # Task Role needs EFS Filesystem ARN
+    Properties:
+      TemplateURL: ./ecs-base.yaml
+      Parameters:
+        StackNamePrefix: !Sub '${AWS::StackName}-ecsbase'
+        EfsFileSystemId: !GetAtt StorageStack.Outputs.EfsFileSystemId
+
+  # --- Nested Stack: Immich Core Services (Server, ML) ---
+  ImmichCoreStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: # Ensure base infra is ready
+      - NetworkingStack
+      - StorageStack
+      - EcsBaseStack
+      - DatabaseStack # Explicit dependency on DB stack
+      - RedisStack    # Explicit dependency on Redis stack
+    Properties:
+      TemplateURL: ./immich-core.yaml
+      Parameters:
+        StackNamePrefix: !Sub '${AWS::StackName}-immichcore'
+        VpcId: !Ref VpcId
+        PrivateSubnetIds: !Join
+          - ','
+          - !Ref PrivateSubnetIds
+        ImmichVersion: !Ref ImmichVersion
+        DBPassword: !Ref DBPassword # Pass sensitive params down
+        DBUsername: !Ref DBUsername
+        DBDatabaseName: !Ref DBDatabaseName
+        ImmichServerCPU: !Ref ImmichServerCPU
+        ImmichServerMemory: !Ref ImmichServerMemory
+        ImmichMLCPU: !Ref ImmichMLCPU
+        ImmichMLMemory: !Ref ImmichMLMemory
+        # Resources from other stacks
+        ECSClusterArn: !GetAtt EcsBaseStack.Outputs.ECSClusterArn
+        ECSClusterName: !GetAtt EcsBaseStack.Outputs.ECSClusterName # Needed for service discovery FQDN
+        ECSTaskExecutionRoleArn: !GetAtt EcsBaseStack.Outputs.ECSTaskExecutionRoleArn
+        ImmichTaskRoleArn: !GetAtt EcsBaseStack.Outputs.ImmichTaskRoleArn
+        LogGroupName: !GetAtt EcsBaseStack.Outputs.LogGroupName
+        ECSServiceSecurityGroupId: !GetAtt NetworkingStack.Outputs.ECSServiceSecurityGroupId
+        ALBTargetGroupArn: !GetAtt NetworkingStack.Outputs.ImmichServerTargetGroupArn
+        EfsFileSystemId: !GetAtt StorageStack.Outputs.EfsFileSystemId
+        # Service names from other stacks for service discovery
+        RedisServiceName: !GetAtt RedisStack.Outputs.RedisServiceName
+        DatabaseServiceName: !GetAtt DatabaseStack.Outputs.DatabaseServiceName
+
+  # --- Nested Stack: Redis Service ---
+  RedisStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - NetworkingStack # Needs SG
+      - EcsBaseStack    # Needs Cluster, Roles, LogGroup
+    Properties:
+      TemplateURL: ./redis.yaml
+      Parameters:
+        StackNamePrefix: !Sub '${AWS::StackName}-redis'
+        PrivateSubnetIds: !Join
+          - ','
+          - !Ref PrivateSubnetIds
+        RedisCPU: !Ref RedisCPU
+        RedisMemory: !Ref RedisMemory
+        ECSClusterArn: !GetAtt EcsBaseStack.Outputs.ECSClusterArn
+        ECSTaskExecutionRoleArn: !GetAtt EcsBaseStack.Outputs.ECSTaskExecutionRoleArn
+        LogGroupName: !GetAtt EcsBaseStack.Outputs.LogGroupName
+        ECSServiceSecurityGroupId: !GetAtt NetworkingStack.Outputs.ECSServiceSecurityGroupId
+
+  # --- Nested Stack: Database Service ---
+  DatabaseStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - NetworkingStack # Needs SG
+      - StorageStack    # Needs EFS
+      - EcsBaseStack    # Needs Cluster, Roles, LogGroup
+    Properties:
+      TemplateURL: ./database.yaml
+      Parameters:
+        StackNamePrefix: !Sub '${AWS::StackName}-database'
+        PrivateSubnetIds: !Join
+          - ','
+          - !Ref PrivateSubnetIds
+        DBPassword: !Ref DBPassword
+        DBUsername: !Ref DBUsername
+        DBDatabaseName: !Ref DBDatabaseName
+        DatabaseCPU: !Ref DatabaseCPU
+        DatabaseMemory: !Ref DatabaseMemory
+        ECSClusterArn: !GetAtt EcsBaseStack.Outputs.ECSClusterArn
+        ECSTaskExecutionRoleArn: !GetAtt EcsBaseStack.Outputs.ECSTaskExecutionRoleArn
+        ImmichTaskRoleArn: !GetAtt EcsBaseStack.Outputs.ImmichTaskRoleArn # Needs EFS access
+        LogGroupName: !GetAtt EcsBaseStack.Outputs.LogGroupName
+        ECSServiceSecurityGroupId: !GetAtt NetworkingStack.Outputs.ECSServiceSecurityGroupId
+        EfsFileSystemId: !GetAtt StorageStack.Outputs.EfsFileSystemId
+
+  # --- Optional: Route 53 DNS Record ---
+  DNSRecord:
+    Type: AWS::Route53::RecordSetGroup
+    Condition: HasDomain
+    Properties:
+      HostedZoneName: !Sub '${DomainName}.' # Assumes DomainName is the root domain or Hosted Zone exists
+      RecordSets:
+        - Name: !Ref DomainName
+          Type: A
+          AliasTarget:
+            HostedZoneId: !GetAtt NetworkingStack.Outputs.LoadBalancerCanonicalHostedZoneID
+            DNSName: !GetAtt NetworkingStack.Outputs.LoadBalancerDNSName
+
+Outputs:
+  ImmichEndpointURL:
+    Description: The URL to access the Immich application
+    Value: !If [HasDomain, !Sub 'https://{DomainName}', !Sub 'http://{LoadBalancerDNS}']
+    Export:
+      Name: !Sub "${AWS::StackName}-ImmichEndpointURL"
+  LoadBalancerDNS:
+      Description: DNS Name of the Application Load Balancer
+      Value: !GetAtt NetworkingStack.Outputs.LoadBalancerDNSName
+  EFSFileSystemId:
+      Description: ID of the EFS File System created for persistent data
+      Value: !GetAtt StorageStack.Outputs.EfsFileSystemId
+  ECSClusterName:
+      Description: Name of the ECS Cluster
+      Value: !GetAtt EcsBaseStack.Outputs.ECSClusterName

@@ -1,0 +1,10 @@
+version = 0.1
+[default.deploy.parameters]
+stack_name = "immich-networking"
+resolve_s3 = true
+s3_prefix = "immich-networking"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "VpcId=\"vpc-0d68af93898aec734\" SubnetIds=\"subnet-0e9baed493e993dc5,subnet-0a76616584b6e1f7a\" DomainName=\"immich.migacloud.dev\" CertificateArn=\"arn:aws:acm:us-east-1:120569646421:certificate/24530081-e3fc-4080-9122-f2f442c4afd0\" StackNamePrefix=\"immich-net\" ImmichServerPort=\"2283\""
+image_repositories = []

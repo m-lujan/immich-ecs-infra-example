@@ -1,0 +1,49 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Nested Stack for Immich Storage Resources (EFS).
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets where EFS Mount Targets will be created.
+  StackNamePrefix:
+    Type: String
+  ECSServiceSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group ID for ECS services, needed for EFS mount targets.
+
+Resources:
+  ImmichEFSFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub '${StackNamePrefix}-ImmichData'
+      # Ensure Backup policy is enabled or configure as needed
+      # BackupPolicy:
+      #  Status: ENABLED
+      LifecyclePolicies: # Example: Move infrequent data to IA
+        - TransitionToIA: AFTER_30_DAYS
+
+  # Create Mount Targets in specified private subnets
+  EFSMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref ImmichEFSFileSystem
+      SubnetId: !Select [0, !Ref PrivateSubnetIds]
+      SecurityGroups: [!Ref ECSServiceSecurityGroupId]
+
+  EFSMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref ImmichEFSFileSystem
+      SubnetId: !Select [1, !Ref PrivateSubnetIds]
+      SecurityGroups: [!Ref ECSServiceSecurityGroupId]
+  # Add more mount targets if more than 2 private subnets are provided/needed
+
+Outputs:
+  EfsFileSystemId:
+    Description: ID of the created EFS File System
+    Value: !Ref ImmichEFSFileSystem

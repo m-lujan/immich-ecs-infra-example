@@ -1,0 +1,10 @@
+version = 0.1
+[default.deploy.parameters]
+stack_name = "immich-ecs"
+resolve_s3 = true
+s3_prefix = "immich-ecs"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+parameter_overrides = "StackNamePrefix=\"immich-ecs\" EfsFileSystemId=\"fs-0a6b3396529a2a5dd\""
+image_repositories = []

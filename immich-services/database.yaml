@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Nested Stack for PostgreSQL Database Service (Self-hosted with pgvector).
+  WARNING: Strongly consider AWS RDS for production.
+
+Parameters:
+  StackNamePrefix: { Type: String }
+  PrivateSubnetIds: { Type: List<AWS::EC2::Subnet::Id> }
+  DBPassword: { Type: String, NoEcho: true }
+  DBUsername: { Type: String }
+  DBDatabaseName: { Type: String }
+  DatabaseCPU: { Type: Number }
+  DatabaseMemory: { Type: Number }
+  ECSClusterArn: { Type: String }
+  ECSTaskExecutionRoleArn: { Type: String }
+  ImmichTaskRoleArn: { Type: String } # Role with EFS access
+  LogGroupName: { Type: String }
+  ECSServiceSecurityGroupId: { Type: AWS::EC2::SecurityGroup::Id }
+  EfsFileSystemId: { Type: String }
+
+Resources:
+  DatabaseTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${StackNamePrefix}-database'
+      RequiresCompatibilities: [ FARGATE ]
+      NetworkMode: awsvpc
+      Cpu: !Ref DatabaseCPU
+      Memory: !Ref DatabaseMemory
+      ExecutionRoleArn: !Ref ECSTaskExecutionRoleArn
+      TaskRoleArn: !Ref ImmichTaskRoleArn # Needs EFS access
+      Volumes:
+        - Name: postgres-data
+          EFSVolumeConfiguration: { FilesystemId: !Ref EfsFileSystemId, RootDirectory: /postgres-data, TransitEncryption: ENABLED }
+      ContainerDefinitions:
+        - Name: database
+          Image: docker.io/tensorchord/pgvecto-rs:pg14-v0.2.0@sha256:739cdd626151ff1f796dc95a6591b55a714f341c737e27f045019ceabf8e8c52
+          Command: [ postgres, -c, shared_preload_libraries=vectors.so, -c, search_path="$$user", public, vectors, -c, logging_collector=on, -c, max_wal_size=2GB, -c, shared_buffers=512MB, -c, wal_compression=on ] # From compose file
+          PortMappings: [{ ContainerPort: 5432, Protocol: tcp }]
+          MountPoints: [{ SourceVolume: postgres-data, ContainerPath: /var/lib/postgresql/data }]
+          Environment:
+            - { Name: POSTGRES_PASSWORD, Value: !Ref DBPassword } # Consider Secrets Manager
+            - { Name: POSTGRES_USER, Value: !Ref DBUsername }
+            - { Name: POSTGRES_DB, Value: !Ref DBDatabaseName }
+            - { Name: POSTGRES_INITDB_ARGS, Value: '--data-checksums' }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options: { awslogs-group: !Ref LogGroupName, awslogs-region: !Ref AWS::Region, awslogs-stream-prefix: database }
+          # HealthCheck: # Simplified health check
+          #   Command: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} || exit 1" ]
+          #   Interval: 300
+          #   Timeout: 30
+          #   Retries: 3
+          #   StartPeriod: 300
+
+  DatabaseService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub '${StackNamePrefix}-DatabaseService' # Service name used for discovery
+      Cluster: !Ref ECSClusterArn
+      TaskDefinition: !Ref DatabaseTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration: { Subnets: !Ref PrivateSubnetIds, SecurityGroups: [!Ref ECSServiceSecurityGroupId], AssignPublicIp: DISABLED }
+      # Enable Service Discovery
+      ServiceRegistries:
+        - RegistryArn: !GetAtt DatabaseServiceDiscovery.Arn
+      HealthCheckGracePeriodSeconds: 300 # Allow ample time for DB init
+
+  DatabaseServiceDiscovery:
+      Type: AWS::ServiceDiscovery::Service
+      Properties:
+          Name: !Sub '${StackNamePrefix}-database' # Short name for DNS
+          DnsConfig:
+              DnsRecords: [{ Type: A, TTL: 60 }]
+              NamespaceId: !ImportValue immich-vpc-PrivateDNSNamespace # Reference the namespace ID
+              RoutingPolicy: MULTIVALUE
+          HealthCheckCustomConfig: { FailureThreshold: 1 } # Use ECS health status
+
+Outputs:
+  DatabaseServiceName:
+    Description: Name of the Database ECS Service (used for discovery)
+    Value: !GetAtt DatabaseService.Name # Export the full service name
+    # Alternative: Export the discovery name if preferred: Value: !Sub '${StackNamePrefix}-database'

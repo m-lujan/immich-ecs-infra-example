@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SAM template to create a VPC with 2 public & 2 private subnets across two AZs,
+  an Internet Gateway, NAT Gateway, Route Tables, a Route 53 Hosted Zone for a subdomain,
+  and request an ACM certificate for that subdomain (requires NS delegation in parent domain).
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: The parent domain name (e.g., migacloud.dev).
+    Default: migacloud.dev
+  SubdomainNamePart: # New Parameter for the subdomain part
+    Type: String
+    Description: The subdomain part to create the hosted zone for (e.g., myproject).
+    Default: myproject
+  PrivateNamespaceName:
+    Type: String
+    Description: The name for the private DNS namespace (e.g., migacloud.local)
+    Default: migacloud.local
+  VpcCidr:
+    Type: String
+    Default: 15.0.0.0/16
+    Description: CIDR block for the VPC.
+  PublicSubnet1Cidr:
+    Type: String
+    Default: 15.0.1.0/24
+    Description: CIDR block for the public subnet in AZ1.
+  PublicSubnet2Cidr:
+    Type: String
+    Default: 15.0.2.0/24
+    Description: CIDR block for the public subnet in AZ2.
+  PrivateSubnet1Cidr:
+    Type: String
+    Default: 15.0.101.0/24
+    Description: CIDR block for the private subnet in AZ1.
+  PrivateSubnet2Cidr:
+    Type: String
+    Default: 15.0.102.0/24
+    Description: CIDR block for the private subnet in AZ2.
+  AvailabilityZone1:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a # Ensure this AZ exists in your target region
+    Description: The first Availability Zone for subnets.
+  AvailabilityZone2:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1b # Ensure this AZ exists in your target region
+    Description: The second Availability Zone for subnets.
+
+Resources:
+  # --- VPC Resources (VPC, IGW, Subnets, Route Tables, NAT GW, EIP) ---
+  # (Keeping these resources the same as the previous version)
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-VPC'
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-IGW'
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Ref AvailabilityZone1
+      CidrBlock: !Ref PublicSubnet1Cidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-PublicSubnet-${AvailabilityZone1}'
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Ref AvailabilityZone2
+      CidrBlock: !Ref PublicSubnet2Cidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-PublicSubnet-${AvailabilityZone2}'
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Ref AvailabilityZone1
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-PrivateSubnet-${AvailabilityZone1}'
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Ref AvailabilityZone2
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-PrivateSubnet-${AvailabilityZone2}'
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-PublicRouteTable'
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-NATGateway-${AvailabilityZone1}'
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-PrivateRouteTable'
+  DefaultPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+  # --- End VPC Resources ---
+
+  # --- Route 53 Hosted Zone for the Subdomain ---
+  SubdomainHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Sub '${SubdomainNamePart}.${DomainName}.' # e.g., myproject.migacloud.dev. (trailing dot is important)
+
+  # --- ACM Certificate for the Subdomain ---
+  ACMCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Sub '${SubdomainNamePart}.${DomainName}' # Certificate for the specific subdomain
+      SubjectAlternativeNames:
+        - !Sub '*.${SubdomainNamePart}.${DomainName}' # Wildcard for sub-subdomains
+      ValidationMethod: DNS
+      DomainValidationOptions: # ACM automatically attempts validation using Route 53 if the HZ exists in the same account
+        - DomainName: !Sub '${SubdomainNamePart}.${DomainName}'
+          HostedZoneId: !Ref SubdomainHostedZone # Explicitly linking might be needed in some complex scenarios, but often not required
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Certificate-${SubdomainNamePart}'
+
+  # --- AWS Cloud Map Namespace
+  PrivateDNSNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Vpc: !Ref VPC
+      Name: !Ref PrivateNamespaceName
+      Description: !Sub 'Private DNS for service discovery of ${AWS::StackName} related resources'
+      Tags: 
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-PrivateDnsNs'
+
+
+Outputs:
+  VpcId:
+    Description: ID of the created VPC
+    Value: !Ref VPC
+  PrivateDnsNamespaceId:
+    Description: ID of the created Private DNS Namespace Id
+    Value: !GetAtt PrivateDNSNamespace.Id
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateDNSNamespace'
+  PublicSubnet1Id:
+    Description: ID of the Public Subnet in AZ1
+    Value: !Ref PublicSubnet1
+  PublicSubnet2Id:
+    Description: ID of the Public Subnet in AZ2
+    Value: !Ref PublicSubnet2
+  PrivateSubnet1Id:
+    Description: ID of the Private Subnet in AZ1
+    Value: !Ref PrivateSubnet1
+  PrivateSubnet2Id:
+    Description: ID of the Private Subnet in AZ2
+    Value: !Ref PrivateSubnet2
+  SubdomainHostedZoneId: # New Output
+    Description: ID of the Route 53 Hosted Zone created for the subdomain
+    Value: !Ref SubdomainHostedZone
+  SubdomainNameServers: # New Output
+    Description: Name servers for the subdomain's Hosted Zone. Add these as NS records in the parent domain's DNS (Cloudflare).
+    Value: !Join [ ", ", !GetAtt SubdomainHostedZone.NameServers ] # Returns comma-separated list
+  ACMCertificateArn:
+    Description: ARN of the requested ACM Certificate for the subdomain (pending validation until NS delegation is complete)
+    Value: !Ref ACMCertificate
+  AvailabilityZone1:
+    Description: Availability Zone 1 used
+    Value: !Ref AvailabilityZone1
+  AvailabilityZone2:
+    Description: Availability Zone 2 used
+    Value: !Ref AvailabilityZone2

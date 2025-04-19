@@ -1,0 +1,10 @@
+version = 0.1
+[default.deploy.parameters]
+stack_name = "immich-db"
+resolve_s3 = true
+s3_prefix = "immich-db"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "StackNamePrefix=\"immich-db\" PrivateSubnetIds=\"subnet-028b5cf8780c231a7,subnet-0686956bc1a610ce9\" DBUsername=\"immich\" DBDatabaseName=\"immich\" DatabaseCPU=\"1024\" DatabaseMemory=\"3072\" ECSClusterArn=\"arn:aws:ecs:us-east-1:120569646421:cluster/immich-ecs-ImmichCluster\" ECSTaskExecutionRoleArn=\"arn:aws:iam::120569646421:role/immich-ecs-ECSTaskExecutionRole\" ImmichTaskRoleArn=\"arn:aws:iam::120569646421:role/immich-ecs-ImmichTaskRole\" LogGroupName=\"/ecs/immich-ecs/immich\" ECSServiceSecurityGroupId=\"sg-0974e6584c585b010\" EfsFileSystemId=\"fs-0a6b3396529a2a5dd\""
+image_repositories = []

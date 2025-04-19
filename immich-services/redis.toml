@@ -1,0 +1,10 @@
+version = 0.1
+[default.deploy.parameters]
+stack_name = "immich-redis"
+resolve_s3 = true
+s3_prefix = "immich-redis"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "StackNamePrefix=\"immich-redis\" PrivateSubnetIds=\"subnet-028b5cf8780c231a7,subnet-0686956bc1a610ce9\" RedisCPU=\"256\" RedisMemory=\"512\" ECSClusterArn=\"arn:aws:ecs:us-east-1:120569646421:cluster/immich-ecs-ImmichCluster\" ECSTaskExecutionRoleArn=\"arn:aws:iam::120569646421:role/immich-ecs-ECSTaskExecutionRole\" LogGroupName=\"/ecs/immich-ecs/immich\" ECSServiceSecurityGroupId=\"sg-0974e6584c585b010\""
+image_repositories = []

@@ -1,0 +1,10 @@
+version = 0.1
+[default.deploy.parameters]
+stack_name = "immich-vpc"
+resolve_s3 = true
+s3_prefix = "immich-vpc"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "DomainName=\"migacloud.dev\" SubdomainNamePart=\"immich\" PrivateNamespaceName=\"migacloud.local\" VpcCidr=\"15.0.0.0/16\" PublicSubnet1Cidr=\"15.0.1.0/24\" PublicSubnet2Cidr=\"15.0.2.0/24\" PrivateSubnet1Cidr=\"15.0.101.0/24\" PrivateSubnet2Cidr=\"15.0.102.0/24\" AvailabilityZone1=\"us-east-1a\" AvailabilityZone2=\"us-east-1b\""
+image_repositories = []

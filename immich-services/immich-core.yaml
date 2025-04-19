@@ -1,0 +1,170 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Nested Stack for Immich Core Services (Server, ML).
+
+Parameters:
+  StackNamePrefix: { Type: String }
+  VpcId: { Type: AWS::EC2::VPC::Id }
+  PrivateSubnetIds: { Type: List<AWS::EC2::Subnet::Id> }
+  ImmichVersion: { Type: String }
+  DBPassword: { Type: String, NoEcho: true }
+  DBUsername: { Type: String }
+  DBDatabaseName: { Type: String }
+  ImmichServerCPU: { Type: Number }
+  ImmichServerMemory: { Type: Number }
+  ImmichMLCPU: { Type: Number }
+  ImmichMLMemory: { Type: Number }
+  ECSClusterArn: { Type: String }
+  ECSClusterName: { Type: String } # ARN of the cluster passed here
+  ECSTaskExecutionRoleArn: { Type: String }
+  ImmichTaskRoleArn: { Type: String }
+  LogGroupName: { Type: String }
+  ECSServiceSecurityGroupId: { Type: AWS::EC2::SecurityGroup::Id }
+  ALBTargetGroupArn: { Type: String }
+  EfsFileSystemId: { Type: String }
+  RedisServiceName: { Type: String } # For service discovery
+  DatabaseServiceName: { Type: String } # For service discovery
+
+Resources:
+  # --- Task Definition: immich-server ---
+  ImmichServerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${StackNamePrefix}-server'
+      RequiresCompatibilities: [ FARGATE ]
+      NetworkMode: awsvpc
+      Cpu: !Ref ImmichServerCPU
+      Memory: !Ref ImmichServerMemory
+      ExecutionRoleArn: !Ref ECSTaskExecutionRoleArn
+      TaskRoleArn: !Ref ImmichTaskRoleArn
+      Volumes:
+        - Name: immich-upload
+          EfsVolumeConfiguration: { FileSystemId: !Ref EfsFileSystemId, RootDirectory: /uploads, TransitEncryption: ENABLED }
+        - Name: localtime
+          Host: {}
+      ContainerDefinitions:
+        - Name: immich-server
+          Image: !Sub 'ghcr.io/immich-app/immich-server:${ImmichVersion}'
+          PortMappings: [{ ContainerPort: 2283, Protocol: tcp }]
+          MountPoints:
+            - { SourceVolume: immich-upload, ContainerPath: /usr/src/app/upload }
+            - { SourceVolume: localtime, ContainerPath: /etc/localtime, ReadOnly: true }
+          Environment:
+            # Use internal FQDN based on Service Discovery (default) or explicit endpoints if using RDS/ElastiCache
+            # Assumes default Service Discovery namespace (.local) - adjust if custom is used
+            - Name: DB_HOSTNAME
+              Value: !Sub '${DatabaseServiceName}.${ECSClusterName}.local' # Construct FQDN
+            - Name: DB_USERNAME
+              Value: !Ref DBUsername
+            - Name: DB_PASSWORD
+              Value: !Ref DBPassword # Consider Secrets Manager
+            - Name: DB_DATABASE_NAME
+              Value: !Ref DBDatabaseName
+            - Name: REDIS_HOSTNAME
+              Value: !Sub '${RedisServiceName}.${ECSClusterName}.local' # Construct FQDN
+            # - Name: TZ
+            #   Value: Etc/UTC
+          LogConfiguration:
+            LogDriver: awslogs
+            Options: { awslogs-group: !Ref LogGroupName, awslogs-region: !Ref AWS::Region, awslogs-stream-prefix: immich-server }
+
+  # --- Task Definition: immich-machine-learning ---
+  ImmichMLTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${StackNamePrefix}-ml'
+      RequiresCompatibilities: [ FARGATE ]
+      NetworkMode: awsvpc
+      Cpu: !Ref ImmichMLCPU
+      Memory: !Ref ImmichMLMemory
+      ExecutionRoleArn: !Ref ECSTaskExecutionRoleArn
+      TaskRoleArn: !Ref ImmichTaskRoleArn # Needs EFS access for model cache
+      Volumes:
+        - Name: model-cache
+          EfsVolumeConfiguration: { FileSystemId: !Ref EfsFileSystemId, RootDirectory: /model-cache, TransitEncryption: ENABLED }
+      ContainerDefinitions:
+        - Name: immich-machine-learning
+          Image: !Sub 'ghcr.io/immich-app/immich-machine-learning:${ImmichVersion}'
+          MountPoints:
+            - { SourceVolume: model-cache, ContainerPath: /cache }
+          Environment:
+            - Name: DB_HOSTNAME
+              Value: !Sub '${DatabaseServiceName}.${ECSClusterName}.local'
+            - Name: DB_USERNAME
+              Value: !Ref DBUsername
+            - Name: DB_PASSWORD
+              Value: !Ref DBPassword # Consider Secrets Manager
+            - Name: DB_DATABASE_NAME
+              Value: !Ref DBDatabaseName
+            - Name: REDIS_HOSTNAME
+              Value: !Sub '${RedisServiceName}.${ECSClusterName}.local'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options: { awslogs-group: !Ref LogGroupName, awslogs-region: !Ref AWS::Region, awslogs-stream-prefix: immich-ml }
+
+  # --- Service: immich-server ---
+  ImmichServerService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub '${StackNamePrefix}-ServerService'
+      Cluster: !Ref ECSClusterArn
+      TaskDefinition: !Ref ImmichServerTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration: { Subnets: !Ref PrivateSubnetIds, SecurityGroups: [!Ref ECSServiceSecurityGroupId], AssignPublicIp: DISABLED }
+      LoadBalancers:
+        - { TargetGroupArn: !Ref ALBTargetGroupArn, ContainerName: immich-server, ContainerPort: 2283 }
+      HealthCheckGracePeriodSeconds: 120
+      # Enable Service Discovery for internal resolution
+      ServiceRegistries:
+        - RegistryArn: !GetAtt ImmichServerServiceDiscovery.Arn
+
+  # --- Service Discovery for Server ---
+  ImmichServerServiceDiscovery:
+      Type: AWS::ServiceDiscovery::Service
+      Properties:
+          Name: !Sub '${StackNamePrefix}-server' # Short name for DNS record
+          DnsConfig:
+              DnsRecords: [{ Type: A, TTL: 60 }]
+              # Assumes a Private DNS Namespace exists for the VPC (e.g., 'local')
+              # Create one if it doesn't exist, or adjust NamespaceId
+              NamespaceId: !ImportValue immich-vpc-PrivateDNSNamespace # Example import
+              RoutingPolicy: MULTIVALUE
+          HealthCheckCustomConfig: { FailureThreshold: 1 } # Use ECS health status
+          NamespaceId: !ImportValue immich-vpc-PrivateDNSNamespace # Reference the namespace ID
+
+
+  # --- Service: immich-machine-learning ---
+  ImmichMLService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub '${StackNamePrefix}-MLService'
+      Cluster: !Ref ECSClusterArn
+      TaskDefinition: !Ref ImmichMLTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration: { Subnets: !Ref PrivateSubnetIds, SecurityGroups: [!Ref ECSServiceSecurityGroupId], AssignPublicIp: DISABLED }
+      # Enable Service Discovery if ML needs to be discoverable (e.g., by server)
+      # ServiceRegistries:
+      #   - RegistryArn: !GetAtt ImmichMLServiceDiscovery.Arn
+
+  # --- Service Discovery for ML (Optional) ---
+  # ImmichMLServiceDiscovery:
+  #     Type: AWS::ServiceDiscovery::Service
+  #     Properties:
+  #         Name: !Sub '${StackNamePrefix}-ml'
+  #         DnsConfig:
+  #             DnsRecords: [{ Type: A, TTL: 60 }]
+  #             NamespaceId: !ImportValue immich-vpc-PrivateDNSNamespace # Reference the namespace ID
+  #             RoutingPolicy: MULTIVALUE
+  #         HealthCheckCustomConfig: { FailureThreshold: 1 }
+  #         NamespaceId: !ImportValue immich-vpc-PrivateDNSNamespace
+
+Outputs:
+    ImmichServerServiceName:
+        Description: Name of the Immich Server ECS Service
+        Value: !GetAtt ImmichServerService.Name
+    ImmichMLServiceName:
+        Description: Name of the Immich ML ECS Service
+        Value: !GetAtt ImmichMLService.Name

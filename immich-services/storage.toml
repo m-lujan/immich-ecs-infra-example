@@ -1,0 +1,10 @@
+version = 0.1
+[default.deploy.parameters]
+stack_name = "immich-storage"
+resolve_s3 = true
+s3_prefix = "immich-storage"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "VpcId=\"vpc-0d68af93898aec734\" PrivateSubnetIds=\"subnet-028b5cf8780c231a7,subnet-0686956bc1a610ce9\" StackNamePrefix=\"immich-storage\" ECSServiceSecurityGroupId=\"sg-0974e6584c585b010\""
+image_repositories = []

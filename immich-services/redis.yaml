@@ -1,0 +1,63 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Nested Stack for Redis Service (Self-hosted).
+  WARNING: Consider AWS ElastiCache for production.
+
+Parameters:
+  StackNamePrefix: { Type: String }
+  PrivateSubnetIds: { Type: List<AWS::EC2::Subnet::Id> }
+  RedisCPU: { Type: Number }
+  RedisMemory: { Type: Number }
+  ECSClusterArn: { Type: String }
+  ECSTaskExecutionRoleArn: { Type: String }
+  LogGroupName: { Type: String }
+  ECSServiceSecurityGroupId: { Type: AWS::EC2::SecurityGroup::Id }
+
+Resources:
+  RedisTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${StackNamePrefix}-redis'
+      RequiresCompatibilities: [ FARGATE ]
+      NetworkMode: awsvpc
+      Cpu: !Ref RedisCPU
+      Memory: !Ref RedisMemory
+      ExecutionRoleArn: !Ref ECSTaskExecutionRoleArn
+      ContainerDefinitions:
+        - Name: redis
+          Image: docker.io/redis:6.2-alpine@sha256:148bb5411c184abd288d9aaed139c98123eeb8824c5d3fce03cf721db58066d8
+          HealthCheck: { Command: [ "CMD-SHELL", "redis-cli ping || exit 1" ], Interval: 30, Timeout: 5, Retries: 3 }
+          PortMappings: [{ ContainerPort: 6379, Protocol: tcp }]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options: { awslogs-group: !Ref LogGroupName, awslogs-region: !Ref AWS::Region, awslogs-stream-prefix: redis }
+
+  RedisService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub '${StackNamePrefix}-RedisService' # Service name used for discovery
+      Cluster: !Ref ECSClusterArn
+      TaskDefinition: !Ref RedisTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration: { Subnets: !Ref PrivateSubnetIds, SecurityGroups: [!Ref ECSServiceSecurityGroupId], AssignPublicIp: DISABLED }
+      # Enable Service Discovery
+      ServiceRegistries:
+        - RegistryArn: !GetAtt RedisServiceDiscovery.Arn
+
+  RedisServiceDiscovery:
+      Type: AWS::ServiceDiscovery::Service
+      Properties:
+          Name: !Sub '${StackNamePrefix}-redis' # Short name for DNS
+          DnsConfig:
+              DnsRecords: [{ Type: A, TTL: 60 }]
+              NamespaceId: !ImportValue immich-vpc-PrivateDNSNamespace # Reference the namespace ID
+              RoutingPolicy: MULTIVALUE
+          HealthCheckCustomConfig: { FailureThreshold: 1 }
+
+Outputs:
+  RedisServiceName:
+    Description: Name of the Redis ECS Service (used for discovery)
+    Value: !GetAtt RedisService.Name # Export the full service name
+    # Alternative: Export the discovery name if preferred: Value: !Sub '${StackNamePrefix}-redis'

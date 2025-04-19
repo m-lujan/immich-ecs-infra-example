@@ -1,0 +1,10 @@
+version = 0.1
+[default.deploy.parameters]
+stack_name = "immich-app"
+resolve_s3 = true
+s3_prefix = "immich-app"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "VpcId=\"vpc-0d68af93898aec734\" SubnetIds=\"subnet-0e9baed493e993dc5,subnet-0a76616584b6e1f7a\" PrivateSubnetIds=\"subnet-028b5cf8780c231a7,subnet-0686956bc1a610ce9\" ImmichVersion=\"v1.131.3\" DBUsername=\"immich\" DBDatabaseName=\"immich\" DomainName=\"immich.migacloud.dev\" CertificateArn=\"arn:aws:acm:us-east-1:120569646421:certificate/24530081-e3fc-4080-9122-f2f442c4afd0\" ImmichServerCPU=\"1024\" ImmichServerMemory=\"2048\" ImmichMLCPU=\"1024\" ImmichMLMemory=\"2048\" RedisCPU=\"256\" RedisMemory=\"512\" DatabaseCPU=\"1024\" DatabaseMemory=\"3072\""
+image_repositories = []

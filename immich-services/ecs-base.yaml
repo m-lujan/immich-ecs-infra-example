@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Nested Stack for Base ECS Resources (Cluster, Roles, Log Group).
+
+Parameters:
+  StackNamePrefix:
+    Type: String
+  EfsFileSystemId:
+    Type: String
+    Description: ID of the EFS file system for IAM policy.
+
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${StackNamePrefix}-ImmichCluster'
+      # Enable Container Insights if desired
+      # Configuration:
+      #   ExecuteCommandConfiguration:
+      #     Logging: DEFAULT
+      # Settings:
+      #   - Name: containerInsights
+      #     Value: enabled
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${StackNamePrefix}/immich'
+      RetentionInDays: 14 # Adjust retention as needed
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${StackNamePrefix}-ECSTaskExecutionRole'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ImmichTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${StackNamePrefix}-ImmichTaskRole'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EFSReadWriteAccess
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:ClientMount
+                  - elasticfilesystem:ClientWrite
+                  - elasticfilesystem:ClientRootAccess # May be needed
+                  - elasticfilesystem:DescribeMountTargets
+                  - elasticfilesystem:DescribeFileSystems
+                Resource: !Sub 'arn:aws:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:file-system/${EfsFileSystemId}'
+
+Outputs:
+  ECSClusterArn:
+    Description: ARN of the ECS Cluster
+    Value: !Ref ECSCluster
+  ECSClusterName:
+    Description: Name of the ECS Cluster (used for Service Discovery FQDN)
+    Value: !GetAtt ECSCluster.Arn # Extract name from ARN if needed, or just pass ARN
+    # CloudFormation doesn't directly expose cluster name via GetAtt. Passing ARN is standard.
+    # If name is strictly needed, construct it: Value: !Sub '${StackNamePrefix}-ImmichCluster'
+  LogGroupName:
+    Description: Name of the CloudWatch Log Group for container logs
+    Value: !Ref LogGroup
+  ECSTaskExecutionRoleArn:
+    Description: ARN of the ECS Task Execution Role
+    Value: !GetAtt ECSTaskExecutionRole.Arn
+  ImmichTaskRoleArn:
+    Description: ARN of the ECS Task Role for Immich services (with EFS access)
+    Value: !GetAtt ImmichTaskRole.Arn
