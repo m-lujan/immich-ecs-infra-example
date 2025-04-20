@@ -42,7 +42,7 @@ Resources:
       SubnetId: !Select [1, !Ref PrivateSubnetIds]
       SecurityGroups: [!Ref ECSServiceSecurityGroupId]
 
-  EFSAccessPoint:
+  PostgresEFSAccessPoint:
     Type: AWS::EFS::AccessPoint
     Properties:
       FileSystemId: !Ref ImmichEFSFileSystem
@@ -68,3 +68,6 @@ Outputs:
   EfsFileSystemId:
     Description: ID of the created EFS File System
     Value: !Ref ImmichEFSFileSystem
+  PostgresEfsAccessPointId:
+    Description: ID of the created Postgres EFS Access Point
+    Value !Ref PostgresEFSAccessPoint
