@@ -17,6 +17,7 @@ Parameters:
   LogGroupName: { Type: String }
   ECSServiceSecurityGroupId: { Type: AWS::EC2::SecurityGroup::Id }
   EfsFileSystemId: { Type: String }
+  PostgresEfsAccessPoint: { Type: String }
 
 Resources:
   DatabaseTaskDefinition:
@@ -31,11 +32,17 @@ Resources:
       TaskRoleArn: !Ref ImmichTaskRoleArn # Needs EFS access
       Volumes:
         - Name: postgres-data
-          EFSVolumeConfiguration: { FilesystemId: !Ref EfsFileSystemId, RootDirectory: /postgres-data, TransitEncryption: ENABLED }
+          EFSVolumeConfiguration: 
+            FilesystemId: !Ref EfsFileSystemId
+            RootDirectory: /
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              IAM: ENABLED
+              AccessPointId: !Ref PostgresEfsAccessPoint
       ContainerDefinitions:
         - Name: database
           Image: docker.io/tensorchord/pgvecto-rs:pg14-v0.2.0@sha256:739cdd626151ff1f796dc95a6591b55a714f341c737e27f045019ceabf8e8c52
-          Command: [ postgres, -c, shared_preload_libraries=vectors.so, -c, search_path="$$user", public, vectors, -c, logging_collector=on, -c, max_wal_size=2GB, -c, shared_buffers=512MB, -c, wal_compression=on ] # From compose file
+          Command: [ postgres, -c, shared_preload_libraries=vectors.so, -c, 'search_path="$$user", public, vectors', -c, logging_collector=on, -c, max_wal_size=2GB, -c, shared_buffers=512MB, -c, wal_compression=on ] # From compose file
           PortMappings: [{ ContainerPort: 5432, Protocol: tcp }]
           MountPoints: [{ SourceVolume: postgres-data, ContainerPath: /var/lib/postgresql/data }]
           Environment:
@@ -62,7 +69,10 @@ Resources:
       DesiredCount: 1
       LaunchType: FARGATE
       NetworkConfiguration:
-        AwsvpcConfiguration: { Subnets: !Ref PrivateSubnetIds, SecurityGroups: [!Ref ECSServiceSecurityGroupId], AssignPublicIp: DISABLED }
+        AwsvpcConfiguration: 
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups: [!Ref ECSServiceSecurityGroupId]
+          AssignPublicIp: DISABLED
       # Enable Service Discovery
       ServiceRegistries:
         - RegistryArn: !GetAtt DatabaseServiceDiscovery.Arn

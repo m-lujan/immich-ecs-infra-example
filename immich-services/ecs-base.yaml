@@ -6,7 +6,11 @@ Parameters:
     Type: String
   EfsFileSystemId:
     Type: String
-    Description: ID of the EFS file system for IAM policy.
+    Description: ID of the EFS file system for IAM policy in TaskRole.
+  PostgresEfsAccessPoint:
+    Type: String
+    Description: ID of the Postgres EFS Access Point for IAM policy in TaskRole.
+
 
 Resources:
   ECSCluster:
@@ -25,7 +29,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/ecs/${StackNamePrefix}/immich'
-      RetentionInDays: 14 # Adjust retention as needed
+      RetentionInDays: 7 # Adjust retention as needed
 
   ECSTaskExecutionRole:
     Type: AWS::IAM::Role
@@ -52,14 +56,20 @@ Resources:
         - PolicyName: EFSReadWriteAccess
           PolicyDocument:
             Statement:
+              # TODO: Remove permissions that are not required
               - Effect: Allow
                 Action:
                   - elasticfilesystem:ClientMount
                   - elasticfilesystem:ClientWrite
                   - elasticfilesystem:ClientRootAccess # May be needed
-                  - elasticfilesystem:DescribeMountTargets
                   - elasticfilesystem:DescribeFileSystems
+                  - elasticfilesystem:DescribeMountTargets
                 Resource: !Sub 'arn:aws:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:file-system/${EfsFileSystemId}'
+                # Allow describing the access point used
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:DescribeAccessPoints
+                Resource: !Sub 'arn:aws:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:access-point/${PostgresEfsAccessPoint}'
 
 Outputs:
   ECSClusterArn:

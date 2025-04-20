@@ -41,7 +41,28 @@ Resources:
       FileSystemId: !Ref ImmichEFSFileSystem
       SubnetId: !Select [1, !Ref PrivateSubnetIds]
       SecurityGroups: [!Ref ECSServiceSecurityGroupId]
-  # Add more mount targets if more than 2 private subnets are provided/needed
+
+  EFSAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref ImmichEFSFileSystem
+      PosixUser:
+        # IMPORTANT: Match the UID/GID of the user running postgres in the container
+        # The official postgres image often runs as user 'postgres' (uid 999, gid 999)
+        # Verify this for the specific image version you use.
+        Uid: "999"
+        Gid: "999"
+      RootDirectory:
+        # Creates the '/pgdata' directory on EFS if it doesn't exist
+        # Sets ownership to the PosixUser (999:999) and permissions to 700 (only owner can read/write/execute)
+        Path: "/pgdata"
+        CreationInfo:
+          OwnerUid: "999"
+          OwnerGid: "999"
+          Permissions: "0700" # Only owner access
+      AccessPointTags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PostgresAccessPoint"
 
 Outputs:
   EfsFileSystemId:

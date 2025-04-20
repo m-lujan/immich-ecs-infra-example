@@ -6,5 +6,5 @@ s3_prefix = "immich-ecs"
 region = "us-east-1"
 confirm_changeset = true
 capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
-parameter_overrides = "StackNamePrefix=\"immich-ecs\" EfsFileSystemId=\"fs-0a6b3396529a2a5dd\""
+parameter_overrides = "StackNamePrefix=\"immich-ecs\" EfsFileSystemId=\"fs-0a6b3396529a2a5dd\" PostgresEfsAccessPoint=\"fsap-0940da19673e7d467\""
 image_repositories = []
